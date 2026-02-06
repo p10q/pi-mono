@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@mariozechner/pi-tui";
@@ -443,10 +444,23 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 		const themesDir = getThemesDir();
 		const darkPath = path.join(themesDir, "dark.json");
 		const lightPath = path.join(themesDir, "light.json");
+		const solarizedDarkPath = path.join(themesDir, "solarized-dark.json");
 		BUILTIN_THEMES = {
 			dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
 			light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
 		};
+		// Load optional built-in themes (don't fail if missing in older installs)
+		try {
+			BUILTIN_THEMES["solarized-dark"] = JSON.parse(fs.readFileSync(solarizedDarkPath, "utf-8")) as ThemeJson;
+		} catch {
+			// Ignore - optional theme
+		}
+		try {
+			const solarizedLightPath = path.join(themesDir, "solarized-light.json");
+			BUILTIN_THEMES["solarized-light"] = JSON.parse(fs.readFileSync(solarizedLightPath, "utf-8")) as ThemeJson;
+		} catch {
+			// Ignore - optional theme
+		}
 	}
 	return BUILTIN_THEMES;
 }
@@ -623,13 +637,33 @@ function detectTerminalBackground(): "dark" | "light" {
 	if (colorfgbg) {
 		const parts = colorfgbg.split(";");
 		if (parts.length >= 2) {
-			const bg = parseInt(parts[1], 10);
+			const bg = parseInt(parts[parts.length - 1], 10);
 			if (!Number.isNaN(bg)) {
-				const result = bg < 8 ? "dark" : "light";
-				return result;
+				// ANSI color indices: 0-6 are dark colors, 7 is white (light),
+				// 8 is bright black (dark, used by e.g. Solarized Dark),
+				// 9-14 are bright colors (dark background), 15 is bright white (light).
+				const isLight = bg === 7 || bg === 15;
+				return isLight ? "light" : "dark";
 			}
 		}
 	}
+
+	// Fallback: on macOS, detect system appearance (many terminals follow it).
+	// `defaults read -g AppleInterfaceStyle` returns "Dark" in dark mode,
+	// and errors (exit 1) in light mode.
+	if (process.platform === "darwin") {
+		try {
+			const result = execSync("defaults read -g AppleInterfaceStyle 2>/dev/null", {
+				encoding: "utf-8",
+				timeout: 500,
+			}).trim();
+			return result === "Dark" ? "dark" : "light";
+		} catch {
+			// Command fails in light mode (key doesn't exist)
+			return "light";
+		}
+	}
+
 	return "dark";
 }
 
