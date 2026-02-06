@@ -2562,6 +2562,16 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+
+		// Print resume hint so the user can easily continue this session
+		const sessionId = this.sessionManager.getSessionId();
+		if (sessionId) {
+			const shortId = sessionId.slice(0, 8);
+			const name = this.sessionManager.getSessionName();
+			const label = name ? ` (${name})` : "";
+			process.stdout.write(`\nResume this session${label}: pi --session ${shortId}\n`);
+		}
+
 		process.exit(0);
 	}
 
