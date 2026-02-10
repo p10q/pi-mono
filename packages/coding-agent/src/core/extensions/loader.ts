@@ -255,15 +255,24 @@ function createExtensionAPI(
 	return api;
 }
 
-async function loadExtensionModule(extensionPath: string) {
-	const jiti = createJiti(import.meta.url, {
-		moduleCache: false,
+type Jiti = ReturnType<typeof createJiti>;
+
+/**
+ * Create a jiti instance for loading extensions.
+ * A single instance is shared across all extensions in one batch to enable
+ * module caching (shared dependencies like pi-ai are resolved only once).
+ * A new instance is created per loadExtensions() call so /reload gets fresh modules.
+ */
+function createExtensionJiti(): Jiti {
+	return createJiti(import.meta.url, {
 		// In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
 		// Also disable tryNative so jiti handles ALL imports (not just the entry point)
 		// In Node.js/dev: use aliases to resolve to node_modules paths
 		...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
 	});
+}
 
+async function loadExtensionModule(extensionPath: string, jiti: Jiti) {
 	const module = await jiti.import(extensionPath, { default: true });
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;
@@ -290,11 +299,12 @@ async function loadExtension(
 	cwd: string,
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
+	jiti: Jiti,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 
 	try {
-		const factory = await loadExtensionModule(resolvedPath);
+		const factory = await loadExtensionModule(resolvedPath, jiti);
 		if (!factory) {
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
@@ -334,9 +344,10 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const errors: Array<{ path: string; error: string }> = [];
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
+	const jiti = createExtensionJiti();
 
 	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime, jiti);
 
 		if (error) {
 			errors.push({ path: extPath, error });
