@@ -131,14 +131,15 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 			}
 		}
 
-		config.region = config.region || "us-east-1";
+		const resolvedRegion = (config.region as string) || "us-east-1";
+		config.region = resolvedRegion;
 
 		try {
 			const client = new BedrockRuntimeClient(config);
 
 			const cacheRetention = resolveCacheRetention(options.cacheRetention);
 			const commandInput = {
-				modelId: model.id,
+				modelId: resolveInferenceProfileId(model.id, resolvedRegion),
 				messages: convertMessages(context, model, cacheRetention),
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention),
 				inferenceConfig: { maxTokens: options.maxTokens, temperature: options.temperature },
@@ -728,4 +729,52 @@ function createImageBlock(mimeType: string, data: string) {
 	}
 
 	return { source: { bytes }, format };
+}
+
+/**
+ * Map AWS region to inference profile prefix for cross-region routing.
+ * Bare model IDs (e.g., "anthropic.claude-sonnet-4-5-20250929-v1:0") are no longer
+ * supported for on-demand throughput. They must be prefixed with a region group
+ * (e.g., "us.anthropic.claude-...") to use a cross-region inference profile.
+ *
+ * See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
+ */
+function regionToInferencePrefix(region: string): string {
+	if (region.startsWith("us-")) return "us";
+	if (region.startsWith("eu-")) return "eu";
+	if (region.startsWith("ap-")) return "ap";
+	if (region.startsWith("ca-")) return "ca";
+	if (region.startsWith("sa-")) return "sa";
+	if (region.startsWith("me-")) return "me";
+	if (region.startsWith("af-")) return "af";
+	// Default to "us" as a safe fallback
+	return "us";
+}
+
+/**
+ * Resolve a model ID to a cross-region inference profile ID if needed.
+ *
+ * AWS Bedrock requires inference profile IDs (prefixed with region group like "us.", "eu.")
+ * for on-demand invocations. If the model ID already has a region prefix, it's returned as-is.
+ * Bare model IDs from providers like "anthropic.claude-*" get the appropriate prefix based
+ * on the configured region.
+ *
+ * Non-provider-prefixed IDs (e.g., custom ARNs) are also returned as-is.
+ */
+function resolveInferenceProfileId(modelId: string, region: string): string {
+	// Already has a region prefix (us., eu., global., ap., etc.)
+	if (/^(us|eu|global|ap|ca|sa|me|af)\./.test(modelId)) {
+		return modelId;
+	}
+
+	// Only auto-prefix known provider model IDs (provider.model format)
+	// This covers: anthropic.claude-*, meta.llama-*, mistral.*, cohere.*, amazon.*, ai21.*, stability.*
+	// But NOT custom endpoints, ARNs, or unknown formats
+	if (/^[a-z][a-z0-9]*\./.test(modelId)) {
+		const prefix = regionToInferencePrefix(region);
+		return `${prefix}.${modelId}`;
+	}
+
+	// Unknown format (ARN, custom endpoint, etc.) — pass through
+	return modelId;
 }
